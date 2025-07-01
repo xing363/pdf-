@@ -881,6 +881,52 @@
         .file-list.list-view .action-btn span {
             display: none;
         }
+        .zoom-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin: 8px 0 0 0;
+        }
+        .zoom-btn {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+            border: none;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            transition: all 0.2s;
+            box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);
+        }
+        .zoom-btn:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+        }
+        .zoom-level {
+            color: #4a5568;
+            font-weight: 600;
+            font-size: 1.08rem;
+            width: 75px;
+            text-align: center;
+            background: transparent;
+            border: none;
+        }
+        /* 让canvas自适应容器宽度，但不超过原始分辨率 */
+        .canvas-container {
+            text-align: center;
+            padding: 25px 0;
+            width: 100%;
+            overflow-x: auto;
+        }
+        .canvas-container canvas {
+            max-width: 100%;
+            height: auto !important;
+        }
     </style>
 </head>
 <body>
@@ -990,6 +1036,13 @@
         <div class="preview-header" id="preview-header">PDF预览</div>
 
         <div class="preview-container">
+            <!-- 新增缩放控件 -->
+            <div class="zoom-controls">
+                <button class="zoom-btn" id="zoom-out" title="缩小"><i class="fas fa-search-minus"></i></button>
+                <input class="zoom-level" id="zoom-level" readonly value="100%">
+                <button class="zoom-btn" id="zoom-in" title="放大"><i class="fas fa-search-plus"></i></button>
+                <button class="zoom-btn" id="zoom-reset" title="重置缩放"><i class="fas fa-sync"></i></button>
+            </div>
             <div id="pdf-container"></div>
 
             <div class="preview-controls">
@@ -1072,6 +1125,14 @@
     const openLocalBtn = document.getElementById('open-local-btn');
     const pdfjsWarning = document.getElementById('pdfjs-warning');
     const viewOptions = document.querySelectorAll('.view-option');
+    const zoomOutBtn = document.getElementById('zoom-out');
+    const zoomInBtn = document.getElementById('zoom-in');
+    const zoomLevel = document.getElementById('zoom-level');
+    const zoomResetBtn = document.getElementById('zoom-reset');
+    let pdfScale = 1.0;
+    const MIN_SCALE = 0.3;
+    const MAX_SCALE = 5.0;
+    const SCALE_STEP = 0.15;
 
     // 模态框元素
     const previewModal = document.getElementById('preview-modal');
@@ -1114,6 +1175,27 @@
 
     // 设置事件监听器
     function setupEventListeners() {
+        // 缩放功能
+        zoomInBtn.addEventListener('click', function() {
+            setScale(pdfScale + SCALE_STEP);
+        });
+        zoomOutBtn.addEventListener('click', function() {
+            setScale(pdfScale - SCALE_STEP);
+        });
+        zoomResetBtn.addEventListener('click', function() {
+            setScale(1.0);
+        });
+
+        // PDF页面导航
+        prevPage.addEventListener('click', onPrevPage);
+        nextPage.addEventListener('click', onNextPage);
+
+        // 浏览器窗口自适应canvas
+        window.addEventListener('resize', function() {
+            if (previewModal.style.display === 'flex' && pdfDoc) {
+                queueRenderPage(pageNum);
+            }
+        });
         // 浏览文件按钮事件
         browseBtn.addEventListener('click', () => {
             fileInput.click();
@@ -1304,6 +1386,17 @@
             });
         });
     }
+    function setScale(newScale) {
+        newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+        if (Math.abs(newScale - pdfScale) > 1e-3) {
+            pdfScale = newScale;
+            zoomLevel.value = Math.round(pdfScale * 100) + '%';
+            queueRenderPage(pageNum);
+        }
+        // 禁用边界按钮
+        zoomInBtn.disabled = pdfScale >= MAX_SCALE - 1e-3;
+        zoomOutBtn.disabled = pdfScale <= MIN_SCALE + 1e-3;
+    }
 
     // PDF页面导航功能
     function onPrevPage() {
@@ -1323,7 +1416,18 @@
         pageRendering = true;
 
         pdfDoc.getPage(num).then(function(page) {
-            const viewport = page.getViewport({ scale: 1.5 });
+            // 计算自适应缩放倍率
+            let scale = pdfScale;
+            // 获取容器宽度，实现自适应
+            const containerWidth = pdfContainer.offsetWidth || 800;
+            const viewport0 = page.getViewport({ scale: 1 });
+            // 若pdfScale大于容器宽度则适应容器
+            if (containerWidth < viewport0.width * pdfScale) {
+                scale = containerWidth / viewport0.width;
+            }
+            scale = Math.max(scale, MIN_SCALE);
+            const viewport = page.getViewport({ scale: scale });
+            pdfContainer.innerHTML = '';
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             const canvasWrapper = document.createElement('div');
@@ -1353,6 +1457,9 @@
         // 更新页码显示
         pageNumElem.textContent = num;
         pageCountElem.textContent = pdfDoc.numPages;
+        zoomLevel.value = Math.round(pdfScale * 100) + '%';
+        zoomInBtn.disabled = pdfScale >= MAX_SCALE - 1e-3;
+        zoomOutBtn.disabled = pdfScale <= MIN_SCALE + 1e-3;
     }
 
     // 队列渲染
@@ -1364,7 +1471,39 @@
             renderPage(num);
         }
     }
+    // 打开PDF文件（使用PDF.js）
+    function openPDF(file) {
+        previewHeader.textContent = file.name;
+        previewModal.style.display = 'flex';
+        pdfContainer.innerHTML = '<div style="text-align:center; padding:50px; color:#4a5568; font-size:1.2rem; background:#f5f8ff; border-radius:12px; margin:20px;"><i class="fas fa-spinner fa-spin"></i> 正在加载PDF文件，请稍候...</div>';
 
+        // 使用PDF.js加载PDF
+        const loadingTask = pdfjsLib.getDocument(file.preview_url);
+
+        loadingTask.promise.then(function(pdf) {
+            pdfDoc = pdf;
+            pageNum = 1;
+            setScale(1.0); // 初始化为100%
+            pageNumElem.textContent = pageNum;
+            pageCountElem.textContent = pdfDoc.numPages;
+            pdfContainer.innerHTML = '';
+            renderPage(pageNum);
+
+            // showNotification(`成功加载: ${file.name}`, 'success');
+        }).catch(function(err) {
+            console.error('PDF加载错误:', err);
+            pdfContainer.innerHTML = `
+                <div class="fallback-message" style="display:block;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>PDF预览失败: ${err.message}</p>
+                    <p>请尝试使用"下载后打开"功能</p>
+                    <button class="btn" onclick="downloadFile(${file.id})" style="margin-top:25px;">
+                        下载文件
+                    </button>
+                </div>
+            `;
+        });
+    }
     // 处理多个文件上传
     function handleMultipleFileUpload(files) {
         // 重置进度条
